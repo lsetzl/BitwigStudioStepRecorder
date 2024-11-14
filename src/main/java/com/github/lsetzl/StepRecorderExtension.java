@@ -4,7 +4,6 @@ import com.bitwig.extension.api.util.midi.ShortMidiMessage;
 import com.bitwig.extension.callback.ShortMidiMessageReceivedCallback;
 import com.bitwig.extension.controller.ControllerExtension;
 import com.bitwig.extension.controller.api.ControllerHost;
-import com.bitwig.extension.controller.api.CursorTrack;
 import com.bitwig.extension.controller.api.MidiIn;
 import com.bitwig.extension.controller.api.PinnableCursorClip;
 
@@ -23,15 +22,14 @@ public class StepRecorderExtension extends ControllerExtension {
 
     private PinnableCursorClip cursorClip;
     private int step = 0;
-    private final List<Integer> pressedKeys = new ArrayList<>();
+    private final List<Integer> pressingKeys = new ArrayList<>();
     private int duration = 0;
 
     @Override
     public void init() {
         final ControllerHost host = getHost();
 
-        CursorTrack cursorTrack = host.createCursorTrack(0, 0);
-        cursorClip = cursorTrack.createLauncherCursorClip(1024, 128);
+        cursorClip = host.createCursorTrack(0, 0).createLauncherCursorClip(1024, 128);
         cursorClip.setStepSize(getStepSize());
 
         final MidiIn midiIn = host.getMidiInPort(0);
@@ -54,41 +52,65 @@ public class StepRecorderExtension extends ControllerExtension {
         host.println(message.toString());
 
         if (isClear(message)) {
-            cursorClip.clearStepsAtX(0, step);
+            clearStepsAtTime();
         } else if (isReset(message)) {
-            pressedKeys.clear();
-            step = 0;
+            resetTimeRange();
+        } else if (isRewind(message)) {
+            rewindTimeRange();
+        } else if (isForward(message)) {
+            forwardTimeRange();
+        } else if (message.isNoteOn()) {
+            addNote(message);
+        } else if (message.isNoteOff() && pressingKeys.contains(message.getData1())) {
+            finishNote(message);
+        }
+    }
+
+    private void finishNote(ShortMidiMessage message) {
+        pressingKeys.remove(Integer.valueOf(message.getData1()));
+        if (pressingKeys.isEmpty()) {
+            step += duration;
             duration = 0;
             setTimeRange();
-        } else if (isRewind(message)) {
-            if (!pressedKeys.isEmpty()) {
-                if (duration > 1) {
-                    duration -= 1;
-                    setKeyingNoteSteps();
-                }
-            } else {
-                if (step > 0) step -= 1;
-                setTimeRange();
+        }
+    }
+
+    private void addNote(ShortMidiMessage message) {
+        if (duration == 0) duration = 1;
+        pressingKeys.add(message.getData1());
+        setNoteSteps();
+    }
+
+    private void forwardTimeRange() {
+        if (!pressingKeys.isEmpty()) {
+            duration += 1;
+            setNoteSteps();
+        } else {
+            step += 1;
+            setTimeRange();
+        }
+    }
+
+    private void clearStepsAtTime() {
+        cursorClip.clearStepsAtX(0, step);
+    }
+
+    private void resetTimeRange() {
+        pressingKeys.clear();
+        step = 0;
+        duration = 0;
+        setTimeRange();
+    }
+
+    private void rewindTimeRange() {
+        if (!pressingKeys.isEmpty()) {
+            if (duration > 1) {
+                duration -= 1;
+                setNoteSteps();
             }
-        } else if (isForward(message)) {
-            if (!pressedKeys.isEmpty()) {
-                duration += 1;
-                setKeyingNoteSteps();
-            } else {
-                step += 1;
-                setTimeRange();
-            }
-        } else if (message.isNoteOn()) {
-            if (duration == 0) duration = 1;
-            pressedKeys.add(message.getData1());
-            setKeyingNoteSteps();
-        } else if (message.isNoteOff() && pressedKeys.contains(message.getData1())) {
-            pressedKeys.remove(Integer.valueOf(message.getData1()));
-            if (pressedKeys.isEmpty()) {
-                step += duration;
-                duration = 0;
-                setTimeRange();
-            }
+        } else {
+            if (step > 0) step -= 1;
+            setTimeRange();
         }
     }
 
@@ -105,8 +127,8 @@ public class StepRecorderExtension extends ControllerExtension {
         cursorClip.clearStep(step, 0);
     }
 
-    private void setKeyingNoteSteps() {
-        pressedKeys.forEach(key -> {
+    private void setNoteSteps() {
+        pressingKeys.forEach(key -> {
             cursorClip.clearStep(step, key);
             cursorClip.setStep(0, step, key, VELOCITY, getStepSize() * duration * SCALING);
         });
