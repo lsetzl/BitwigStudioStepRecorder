@@ -3,11 +3,10 @@ package com.github.lsetzl;
 import com.bitwig.extension.api.util.midi.ShortMidiMessage;
 import com.bitwig.extension.callback.ShortMidiMessageReceivedCallback;
 import com.bitwig.extension.controller.ControllerExtension;
-import com.bitwig.extension.controller.api.ControllerHost;
-import com.bitwig.extension.controller.api.MidiIn;
-import com.bitwig.extension.controller.api.PinnableCursorClip;
+import com.bitwig.extension.controller.api.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class StepRecorderExtension extends ControllerExtension {
@@ -15,12 +14,17 @@ public class StepRecorderExtension extends ControllerExtension {
         super(definition, host);
     }
 
+    private final List<Double> STEP_SIZES = Arrays.asList(0.125, 0.5 / 3, 0.25, 0.5, 1.0, 2.0, 4.0);
+
     private final int OCTAVE_KEYS = 12;
-    private final int VELOCITY = 100;
-    private final int DIVISION = 16;
-    private final double SCALING = 0.9;
+
+    Preferences preferences;
+    SettableRangedValue velocity;
+    SettableRangedValue scaling;
 
     private PinnableCursorClip cursorClip;
+    private double stepSize = 0.25;
+    private double previewStepSize = 0.25;
     private int step = 0;
     private final List<Integer> pressingKeys = new ArrayList<>();
     private int duration = 0;
@@ -29,8 +33,12 @@ public class StepRecorderExtension extends ControllerExtension {
     public void init() {
         final ControllerHost host = getHost();
 
+        preferences = host.getPreferences();
+        velocity = preferences.getNumberSetting("Velocity", "Velocity", 0, 125, 5, "", 100);
+        scaling = preferences.getNumberSetting("Scaling", "Scaling", 0, 1, 0.05, "", 0.9);
+
         cursorClip = host.createCursorTrack(0, 0).createLauncherCursorClip(1024, 128);
-        cursorClip.setStepSize(getStepSize());
+        cursorClip.setStepSize(stepSize);
 
         final MidiIn midiIn = host.getMidiInPort(0);
         midiIn.setMidiCallback((ShortMidiMessageReceivedCallback) this::onMidiIn);
@@ -59,6 +67,10 @@ public class StepRecorderExtension extends ControllerExtension {
             rewindTimeRange();
         } else if (isForward(message)) {
             forwardTimeRange();
+        } else if (isDecreaseStepSize(message)) {
+            decreaseStepSize();
+        } else if (isIncreaseStepSize(message)) {
+            increaseStepSize();
         } else if (message.isNoteOn()) {
             addNote(message);
         } else if (message.isNoteOff() && pressingKeys.contains(message.getData1())) {
@@ -81,16 +93,6 @@ public class StepRecorderExtension extends ControllerExtension {
         setNoteSteps();
     }
 
-    private void forwardTimeRange() {
-        if (!pressingKeys.isEmpty()) {
-            duration += 1;
-            setNoteSteps();
-        } else {
-            step += 1;
-            setTimeRange();
-        }
-    }
-
     private void clearStepsAtTime() {
         cursorClip.clearStepsAtX(0, step);
     }
@@ -100,6 +102,16 @@ public class StepRecorderExtension extends ControllerExtension {
         step = 0;
         duration = 0;
         setTimeRange();
+    }
+
+    private void forwardTimeRange() {
+        if (!pressingKeys.isEmpty()) {
+            duration += 1;
+            setNoteSteps();
+        } else {
+            step += 1;
+            setTimeRange();
+        }
     }
 
     private void rewindTimeRange() {
@@ -114,8 +126,24 @@ public class StepRecorderExtension extends ControllerExtension {
         }
     }
 
-    private double getStepSize() {
-        return 1.0 / DIVISION;
+    private void decreaseStepSize() {
+        changeStepSize(-1);
+    }
+
+    private void increaseStepSize() {
+        changeStepSize(1);
+    }
+
+    private void changeStepSize(int addIndex) {
+        int index = STEP_SIZES.indexOf(stepSize) + addIndex;
+        if (index < 0 || index >= STEP_SIZES.size()) return;
+
+        previewStepSize = stepSize;
+        stepSize = STEP_SIZES.get(index);
+        step = (int) (step * previewStepSize / stepSize);
+        duration = (int) (duration * previewStepSize / stepSize);
+        cursorClip.setStepSize(stepSize);
+        setTimeRange();
     }
 
     private void setTimeRange() {
@@ -123,14 +151,14 @@ public class StepRecorderExtension extends ControllerExtension {
         if (duration > 0) {
             range = duration;
         }
-        cursorClip.setStep(0, step, 0, 0, getStepSize() * range);
+        cursorClip.setStep(0, step, 0, 0, stepSize * range);
         cursorClip.clearStep(step, 0);
     }
 
     private void setNoteSteps() {
         pressingKeys.forEach(key -> {
             cursorClip.clearStep(step, key);
-            cursorClip.setStep(0, step, key, VELOCITY, getStepSize() * duration * SCALING);
+            cursorClip.setStep(0, step, key, (int) velocity.getRaw(), stepSize * duration * scaling.getRaw());
         });
         setTimeRange();
     }
@@ -149,5 +177,13 @@ public class StepRecorderExtension extends ControllerExtension {
 
     private boolean isForward(ShortMidiMessage message) {
         return message.isNoteOn() && message.getData1() % OCTAVE_KEYS == 3;
+    }
+
+    private boolean isDecreaseStepSize(ShortMidiMessage message) {
+        return message.isNoteOn() && message.getData1() % OCTAVE_KEYS == 8;
+    }
+
+    private boolean isIncreaseStepSize(ShortMidiMessage message) {
+        return message.isNoteOn() && message.getData1() % OCTAVE_KEYS == 10;
     }
 }
